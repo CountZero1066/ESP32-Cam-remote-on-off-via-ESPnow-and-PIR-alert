@@ -1,0 +1,233 @@
+#include "esp_camera.h"
+#include <WiFi.h>
+#include <WiFiClient.h>
+#include <esp_now.h>
+
+//camera model
+#define CAMERA_MODEL_AI_THINKER
+#define pirPin 5
+ 
+#include "camera_pins.h"
+ 
+
+ 
+const char* ssid = "xxxxxxxxxxxxxx";
+const char* password = "xxxxxxxxxxxxxxx";
+
+uint8_t broadcastAddress[] = {0xAC,0x67,0xB2,0x05,0x03,0x9c}; //Board mounted ESP32 i.e. System Central Node
+String local_IP;
+String Start_Stop_Stream;
+String bt_inbound_temp;
+String esp32_inbound;
+String message_in;
+String message;
+int last_pir_state = LOW;
+String unit_mac;
+ 
+void startCameraServer();
+ 
+void capture_photo()// This function will capture the photo
+{
+digitalWrite(led, HIGH);
+delay(200);
+uint32_t randomNum = random(50000);
+Serial.println("http://"+local_IP+"/capture?_cb="+ (String)randomNum);
+digitalWrite(led, LOW);
+delay(1000);
+}
+
+ //-------------------------------------------------------------------------------------------
+void setup() 
+{
+Serial.begin(115200);
+pinMode(led,OUTPUT);
+pinMode(pirPin, INPUT); 
+Serial.setDebugOutput(true);
+Serial.println();
+ 
+
+
+WiFi.mode(WIFI_AP_STA); 
+WiFi.begin(ssid, password);
+while (WiFi.status() != WL_CONNECTED)
+{
+delay(500);
+Serial.print(".");
+}
+Serial.println("");
+Serial.println("WiFi connected");
+
+ if (esp_now_init() != 0) {
+    Serial.println("Error initializing ESP-NOW");
+    return;
+  }
+
+ 
+esp_now_register_recv_cb(OnDataRecv);
+
+esp_now_register_send_cb(OnDataSent);
+esp_now_peer_info_t peerInfo;
+  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+  peerInfo.channel = 0;  
+  peerInfo.encrypt = false;
+  
+  // Add peer        
+  if (esp_now_add_peer(&peerInfo) != ESP_OK){
+    Serial.println("Failed to add peer");
+    return;
+  }
+
+ 
+//start_webserver();
+
+}
+//-------------------------------------------------------------------------------------------
+
+void start_webserver()
+{
+camera_config_t config;
+config.ledc_channel = LEDC_CHANNEL_0;
+config.ledc_timer = LEDC_TIMER_0;
+config.pin_d0 = Y2_GPIO_NUM;
+config.pin_d1 = Y3_GPIO_NUM;
+config.pin_d2 = Y4_GPIO_NUM;
+config.pin_d3 = Y5_GPIO_NUM;
+config.pin_d4 = Y6_GPIO_NUM;
+config.pin_d5 = Y7_GPIO_NUM;
+config.pin_d6 = Y8_GPIO_NUM;
+config.pin_d7 = Y9_GPIO_NUM;
+config.pin_xclk = XCLK_GPIO_NUM;
+config.pin_pclk = PCLK_GPIO_NUM;
+config.pin_vsync = VSYNC_GPIO_NUM;
+config.pin_href = HREF_GPIO_NUM;
+config.pin_sscb_sda = SIOD_GPIO_NUM;
+config.pin_sscb_scl = SIOC_GPIO_NUM;
+config.pin_pwdn = PWDN_GPIO_NUM;
+config.pin_reset = RESET_GPIO_NUM;
+config.xclk_freq_hz = 20000000;
+config.pixel_format = PIXFORMAT_JPEG;
+ 
+// if PSRAM IC present, init with UXGA resolution and higher JPEG quality
+// for larger pre-allocated frame buffer.
+if(psramFound()){
+config.frame_size = FRAMESIZE_UXGA;
+config.jpeg_quality = 10;
+config.fb_count = 2;
+} 
+else
+{
+config.frame_size = FRAMESIZE_SVGA;
+config.jpeg_quality = 12;
+config.fb_count = 1;
+}
+  
+  // camera init
+esp_err_t err = esp_camera_init(&config);
+if (err != ESP_OK) {
+Serial.printf("Camera init failed with error 0x%x", err);
+return;
+}
+ 
+sensor_t * s = esp_camera_sensor_get();
+// initial sensors are flipped vertically and colors are a bit saturated
+if (s->id.PID == OV3660_PID) 
+{
+s->set_vflip(s, 1); // flip it back
+s->set_brightness(s, 1); // up the brightness just a bit
+s->set_saturation(s, -2); // lower the saturation
+}
+// drop down frame size for higher initial frame rate
+s->set_framesize(s, FRAMESIZE_QVGA);
+    startCameraServer();
+ 
+Serial.print("Camera Ready! Use 'http://");
+Serial.print(WiFi.localIP());
+local_IP = WiFi.localIP().toString();
+Serial.println("' to connect");
+     
+}
+//-------------------------------------------------------------------------------------------
+void stop_webserver()
+{
+   
+         esp_camera_deinit();
+     
+}
+//-------------------------------------------------------------------------------------------
+
+String format_AP_creds(String string_to_format) {
+  String shave_whitespace;
+
+  int i = 0;
+  int char_to_count = string_to_format.length() - 2;
+
+  for (i = 0; i < char_to_count; i++)
+  {
+    shave_whitespace += string_to_format[i];
+  }
+  return shave_whitespace;
+}
+//-------------------------------------------------------------------------------------------
+
+void OnDataRecv(const uint8_t * mac,const uint8_t *incomingData, int len) {
+
+  char* buff = (char*) incomingData;
+  String buffStr = String(buff);
+  
+  Serial.println("message: ");
+  Serial.print(buffStr);
+  Serial.print("");
+  Serial.println("formated=//" + format_comms(buffStr) + "//");
+  
+  if (format_comms(buffStr) = "ON"){
+    start_webserver();
+  }
+  else if (format_comms(buffStr) = "OFF"){
+    stop_webserver();
+  }
+}
+//-------------------------------------------------------------------------------------------
+void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  
+  Serial.print("\r\nLast Packet Send Status:\t");
+  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
+}
+
+//-------------------------------------------------------------------------------------------
+void Send_message()
+{
+   unit_mac = WiFi.macAddress();
+   message = "ESP-Cam;" + unit_mac + "PIR-01;";
+   uint8_t *buff = (uint8_t*) message.c_str();
+   size_t sizeBuff = sizeof(buff) * message.length();
+   esp_now_send(broadcastAddress, buff, sizeBuff);
+         
+}
+
+//-------------------------------------------------------------------------------------------
+String format_comms(String string_to_format) {
+  String shave_whitespace;
+
+  int i = 0;
+  int char_to_count = string_to_format.length() - 2;
+
+  for (i = 0; i < char_to_count; i++)
+  {
+    shave_whitespace += string_to_format[i];
+  }
+  return shave_whitespace;
+}
+
+//-------------------------------------------------------------------------------------------
+void loop()
+{
+if (pirPin != last_pir_state){
+  last_pir_state = pirPin;
+if(digitalRead(pirPin) == HIGH)
+     { 
+        Send_message();
+       
+     }
+   }
+
+}
